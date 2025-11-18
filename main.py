@@ -1,24 +1,13 @@
 import os
-import json
 import base64
-
-from fastapi import FastAPI, File, UploadFile, Form
+import json
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from groq import Groq
 
-# ==========================
-# Configuração da Groq
-# ==========================
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-
-# ==========================
-# FastAPI
-# ==========================
 app = FastAPI(title="Blaze IA – Double & Crash")
 
-# CORS liberando tudo (p/ GitHub Pages, etc.)
+# CORS liberado pro seu front (GitHub Pages, etc.)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,130 +16,166 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class AnaliseResponse(BaseModel):
-    acao: str
-    confianca: float
-    justificativa: str
+# Cliente da Groq
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+# Modelo NOVO de visão da Groq
+MODEL_NAME = "llama-3.2-90b-vision-preview"
 
 
 @app.get("/")
-def root():
-    return {"status": "online", "msg": "Blaze IA backend OK"}
+async def root():
+    return {"status": "ok", "msg": "Blaze IA API online"}
 
 
-# ==========================
-# Função que chama a Groq Vision
-# ==========================
-def chamar_groq_vision(image_bytes: bytes, modo: str) -> AnaliseResponse:
+async def file_to_base64(upload: UploadFile) -> str:
     """
-    Envia o print para o modelo de visão da Groq e tenta extrair
-    acao / confianca / justificativa em JSON.
+    Converte o arquivo enviado em base64 (string) para mandar pra IA.
+    """
+    content = await upload.read()
+    return base64.b64encode(content).decode("utf-8")
+
+
+@app.post("/api/analisar")
+async def analisar(
+    image: UploadFile = File(...),
+    modo: str = Form("double"),  # "double" ou "crash"
+):
+    """
+    Recebe um print da Blaze + modo de jogo e retorna ação da IA:
+    - Double: focar em BRANCO
+    - Crash: focar em 2x
     """
 
-    if client is None:
-        return AnaliseResponse(
-            acao="NAO_OPERAR",
-            confianca=0.0,
-            justificativa="GROQ_API_KEY não configurada no servidor. IA desativada."
+    # garante valor conhecido
+    modo = modo.lower().strip()
+    if modo not in ("double", "crash"):
+        modo = "double"
+
+    # descrição amigável pro prompt
+    if modo == "double":
+        modo_descricao = (
+            "Blaze Double, focando apenas em decidir se vale a pena entrar "
+            "buscando o BRANCO (white)."
+        )
+    else:
+        modo_descricao = (
+            "Blaze Crash, focando apenas em decidir se vale a pena entrar "
+            "buscando multiplicador de 2x."
         )
 
-    # Converte imagem para data URL base64
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
-    data_url = f"data:image/png;base64,{b64}"
+    try:
+        img_b64 = await file_to_base64(image)
 
-    system_prompt = """
-Você é uma IA especialista em padrões da Blaze (Double e Crash).
-Analise SOMENTE o histórico visível no print.
-
-OBJETIVO:
-- MODO double: decidir se vale a pena buscar o BRANCO na próxima rodada.
-- MODO crash: decidir se vale a pena entrar para buscar 2x (sair exatamente em 2x).
+        prompt_text = f"""
+Você é uma IA que analisa prints da Blaze no modo {modo_descricao}.
 
 REGRAS IMPORTANTES:
-- JAMAIS invente números. Use apenas o que está visível no print.
-- Seja conservador: se não houver padrão forte, prefira NÃO OPERAR.
-- Nunca prometa lucro garantido.
+- Analise somente o histórico visível no print.
+- Considere sequência de cores/valores, padrões recentes e risco.
+- Se o cenário estiver muito ruim ou incerto, recomende NÃO ENTRAR.
 
-FORMATO DE RESPOSTA:
-Responda estritamente em JSON, sem texto extra, neste formato:
+Sua resposta DEVE ser SOMENTE um JSON válido, sem texto antes ou depois, no seguinte formato:
 
-{
-  "acao": "BRANCO" ou "CRASH_2X" ou "NAO_OPERAR",
-  "confianca": número entre 0 e 1,
-  "justificativa": "texto curto explicando o motivo em português"
-}
-"""
+{{
+  "acao": "BRANCO" | "CRASH_2X" | "NAO_OPERAR",
+  "confianca": 0.0 a 1.0,
+  "justificativa": "texto curto em português explicando o motivo"
+}}
 
-    user_text = f"""
-Modo atual: {modo}.
+- Para Blaze Double (modo="double"), use:
+  - "BRANCO"    -> quando enxergar oportunidade de entrar no branco
+  - "NAO_OPERAR" -> quando não for seguro entrar
 
-- Se o modo for "double", a ação deve ser:
-  - "BRANCO"      -> se for uma boa oportunidade de buscar o branco
-  - "NAO_OPERAR"  -> se não for um bom momento
+- Para Blaze Crash (modo="crash"), use:
+  - "CRASH_2X"  -> quando enxergar boa chance de bater 2x
+  - "NAO_OPERAR" -> quando não for seguro entrar
 
-- Se o modo for "crash", a ação deve ser:
-  - "CRASH_2X"    -> se for uma boa oportunidade de buscar 2x
-  - "NAO_OPERAR"  -> se não for um bom momento
+Se não conseguir analisar por qualquer motivo, responda:
+{{
+  "acao": "NAO_OPERAR",
+  "confianca": 0.0,
+  "justificativa": "Não consegui analisar o print com segurança. Prefira não operar nesta rodada."
+}}
+        """.strip()
 
-Não use nenhum outro valor além destes.
-Se estiver em dúvida, escolha "NAO_OPERAR".
-"""
-
-    try:
+        # chamada ao modelo de visão
         completion = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": system_prompt},
+                {
+                    "role": "system",
+                    "content": "Você é uma IA especialista em Blaze que responde sempre em JSON válido.",
+                },
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": user_text},
-                        # 👇 tipo correto pra visão na Groq
-                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {
+                            "type": "text",
+                            "text": prompt_text,
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{img_b64}"
+                            },
+                        },
                     ],
                 },
             ],
-            temperature=0.3,
-            max_tokens=300,
+            max_tokens=400,
         )
 
-        content = completion.choices[0].message.content.strip()
-        data = json.loads(content)
+        raw_content = completion.choices[0].message.content
+        # tenta interpretar como JSON
+        try:
+            data = json.loads(raw_content)
+        except Exception:
+            # fallback se a IA mandar qualquer coisa fora do padrão
+            data = {
+                "acao": "NAO_OPERAR",
+                "confianca": 0.0,
+                "justificativa": (
+                    "Erro ao interpretar a resposta da IA. "
+                    "Prefira não operar nesta rodada."
+                ),
+            }
 
+        # saneia campos básicos pra evitar erro no front
         acao = str(data.get("acao", "NAO_OPERAR")).upper()
-        confianca = float(data.get("confianca", 0.0))
-        justificativa = str(data.get("justificativa", "")).strip()
-
-        if acao not in {"BRANCO", "CRASH_2X", "NAO_OPERAR"}:
-            acao = "NAO_OPERAR"
-
-        return AnaliseResponse(
-            acao=acao,
-            confianca=max(0.0, min(1.0, confianca)),
-            justificativa=justificativa
-            or "IA não conseguiu explicar o motivo. Prefira não operar."
+        try:
+            confianca = float(data.get("confianca", 0.0))
+        except Exception:
+            confianca = 0.0
+        justificativa = str(
+            data.get(
+                "justificativa",
+                "Mercado indefinido. Prefira não operar nesta rodada.",
+            )
         )
+
+        # clampa confiança entre 0 e 1
+        if confianca < 0:
+            confianca = 0.0
+        if confianca > 1:
+            confianca = 1.0
+
+        return {
+            "acao": acao,
+            "confianca": confianca,
+            "justificativa": justificativa,
+            "modo": modo,
+        }
 
     except Exception as e:
-        return AnaliseResponse(
-            acao="NAO_OPERAR",
-            confianca=0.0,
-            justificativa=f"Erro ao usar a IA: {e}. Prefira não operar nesta rodada."
-        )
-
-
-# ==========================
-# Endpoint principal
-# Aceita /api/analisar e /api/analisar/
-# ==========================
-@app.post("/api/analisar", response_model=AnaliseResponse)
-@app.post("/api/analisar/", response_model=AnaliseResponse)
-async def analisar_imagem(
-    image: UploadFile = File(...),
-    modo: str = Form("double"),
-):
-    """
-    Recebe o print da Blaze + modo (double/crash) e retorna a decisão da IA.
-    """
-    image_bytes = await image.read()
-    return chamar_groq_vision(image_bytes, modo)
+        # log básico no backend e resposta segura
+        print("Erro ao usar IA:", repr(e))
+        return {
+            "acao": "NAO_OPERAR",
+            "confianca": 0.0,
+            "justificativa": (
+                f"Erro ao usar a IA. Detalhe: {repr(e)}. "
+                "Prefira não operar nesta rodada."
+            ),
+            "modo": modo,
+        }
