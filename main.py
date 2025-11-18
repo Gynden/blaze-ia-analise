@@ -1,42 +1,31 @@
 import os
-import base64
 import json
-from typing import Optional
+import base64
 
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from groq import Groq
 
-# ----------------------------
-# Configuração básica
-# ----------------------------
+# ==========================
+# Configuração da Groq
+# ==========================
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-app = FastAPI(
-    title="Blaze IA – Double & Crash",
-    version="1.0.0",
-    description="API que analisa prints da Blaze e retorna recomendação da IA."
-)
+# ==========================
+# FastAPI
+# ==========================
+app = FastAPI(title="Blaze IA – Double & Crash")
 
-# CORS – libera pro seu site no GitHub Pages
+# CORS liberando tudo (p/ GitHub Pages, etc.)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # se quiser, depois troca para o domínio específico
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Cliente Groq (usa a variável de ambiente GROQ_API_KEY no Render)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-client: Optional[Groq] = None
-if GROQ_API_KEY:
-    client = Groq(api_key=GROQ_API_KEY)
-
-
-# ----------------------------
-# Modelos de resposta
-# ----------------------------
 
 class AnaliseResponse(BaseModel):
     acao: str
@@ -44,22 +33,14 @@ class AnaliseResponse(BaseModel):
     justificativa: str
 
 
-# ----------------------------
-# Rota raiz – só pra teste rápido
-# ----------------------------
-
 @app.get("/")
 def root():
-    return {
-        "status": "online",
-        "mensagem": "Backend da Blaze IA está rodando.",
-    }
+    return {"status": "online", "msg": "Blaze IA backend OK"}
 
 
-# ----------------------------
-# Função auxiliar – chama Groq
-# ----------------------------
-
+# ==========================
+# Função que chama a Groq Vision
+# ==========================
 def chamar_groq_vision(image_bytes: bytes, modo: str) -> AnaliseResponse:
     """
     Envia o print para o modelo de visão da Groq e tenta extrair
@@ -67,18 +48,16 @@ def chamar_groq_vision(image_bytes: bytes, modo: str) -> AnaliseResponse:
     """
 
     if client is None:
-        # Se não tiver API key, devolve um fallback seguro
         return AnaliseResponse(
             acao="NAO_OPERAR",
             confianca=0.0,
             justificativa="GROQ_API_KEY não configurada no servidor. IA desativada."
         )
 
-    # Converte imagem pra base64 (data URL)
+    # Converte imagem para data URL base64
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:image/png;base64,{b64}"
 
-    # Prompt para o modelo
     system_prompt = """
 Você é uma IA especialista em padrões da Blaze (Double e Crash).
 Analise SOMENTE o histórico visível no print.
@@ -93,7 +72,7 @@ REGRAS IMPORTANTES:
 - Nunca prometa lucro garantido.
 
 FORMATO DE RESPOSTA:
-Responda estritamente em JSON, sem texto extra, seguindo este modelo:
+Responda estritamente em JSON, sem texto extra, neste formato:
 
 {
   "acao": "BRANCO" ou "CRASH_2X" ou "NAO_OPERAR",
@@ -105,8 +84,6 @@ Responda estritamente em JSON, sem texto extra, seguindo este modelo:
     user_text = f"""
 Modo atual: {modo}.
 
-Interprete o print da Blaze e decida:
-
 - Se o modo for "double", a ação deve ser:
   - "BRANCO"      -> se for uma boa oportunidade de buscar o branco
   - "NAO_OPERAR"  -> se não for um bom momento
@@ -116,7 +93,7 @@ Interprete o print da Blaze e decida:
   - "NAO_OPERAR"  -> se não for um bom momento
 
 Não use nenhum outro valor além destes.
-Lembre-se: seja conservador, não force entradas.
+Se estiver em dúvida, escolha "NAO_OPERAR".
 """
 
     try:
@@ -128,7 +105,7 @@ Lembre-se: seja conservador, não force entradas.
                     "role": "user",
                     "content": [
                         {"type": "text", "text": user_text},
-                        # 👇 AQUI estava "input_image", agora é "image_url"
+                        # 👇 tipo correto pra visão na Groq
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 },
@@ -160,3 +137,20 @@ Lembre-se: seja conservador, não force entradas.
             confianca=0.0,
             justificativa=f"Erro ao usar a IA: {e}. Prefira não operar nesta rodada."
         )
+
+
+# ==========================
+# Endpoint principal
+# Aceita /api/analisar e /api/analisar/
+# ==========================
+@app.post("/api/analisar", response_model=AnaliseResponse)
+@app.post("/api/analisar/", response_model=AnaliseResponse)
+async def analisar_imagem(
+    image: UploadFile = File(...),
+    modo: str = Form("double"),
+):
+    """
+    Recebe o print da Blaze + modo (double/crash) e retorna a decisão da IA.
+    """
+    image_bytes = await image.read()
+    return chamar_groq_vision(image_bytes, modo)
