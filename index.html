@@ -144,155 +144,144 @@
   </div>
 
   <script>
-    const fileInput = document.getElementById("file-input");
-    const previewImage = document.getElementById("preview-image");
-    const previewPlaceholder = document.getElementById("preview-placeholder");
-    const analisarBtn = document.getElementById("analisar-btn");
-    const statusText = document.getElementById("status-text");
+  const fileInput = document.getElementById("file-input");
+  const previewImage = document.getElementById("preview-image");
+  const previewPlaceholder = document.getElementById("preview-placeholder");
+  const analisarBtn = document.getElementById("analisar-btn");
+  const statusText = document.getElementById("status-text");
 
-    const resultadoCard = document.getElementById("resultado-card");
-    const acaoText = document.getElementById("acao-text");
-    const confText = document.getElementById("conf-text");
-    const justificativaText = document.getElementById("justificativa-text");
+  const resultadoCard = document.getElementById("resultado-card");
+  const acaoText = document.getElementById("acao-text");
+  const confText = document.getElementById("conf-text");
+  const justificativaText = document.getElementById("justificativa-text");
 
-    let selectedFile = null;
+  let selectedFile = null;
 
-    // 👉 Se o teu endpoint for só /analisar, troca aqui:
-    const BACKEND_URL =
-      "https://blaze-ia-analise.onrender.com/analisar";
+  // ✅ Endpoint correto
+  const BACKEND_URL = "https://blaze-ia-analise.onrender.com/analisar";
 
-    function getSelectedMode() {
-      const radio = document.querySelector(
-        'input[name="game-mode"]:checked'
-      );
-      return radio ? radio.value : "double";
-    }
+  function getSelectedMode() {
+    const radio = document.querySelector('input[name="game-mode"]:checked');
+    return radio ? radio.value : "double";
+  }
 
-    function setImageFile(file) {
-      if (!file) return;
+  function setImageFile(file) {
+    if (!file) return;
 
-      selectedFile = file;
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        previewImage.src = ev.target.result;
-        previewImage.classList.remove("hidden");
-        previewPlaceholder.classList.add("hidden");
-      };
-      reader.readAsDataURL(file);
-      statusText.textContent = "Imagem carregada. Pronto para analisar.";
-    }
+    selectedFile = file;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      previewImage.src = ev.target.result;
+      previewImage.classList.remove("hidden");
+      previewPlaceholder.classList.add("hidden");
+    };
+    reader.readAsDataURL(file);
+    statusText.textContent = "Imagem carregada. Pronto para analisar.";
+  }
 
-    // Abrir seletor ao clicar em "Enviar print"
-    document.querySelector("label").addEventListener("click", () => {
-      fileInput.click();
-    });
+  document.querySelector("label").addEventListener("click", () => {
+    fileInput.click();
+  });
 
-    fileInput.addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      setImageFile(file);
-    });
+  fileInput.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    setImageFile(file);
+  });
 
-    // Colar print (Ctrl+V - desktop)
-    document.addEventListener("paste", (e) => {
-      const clipboard = e.clipboardData || window.clipboardData;
-      if (!clipboard) return;
+  document.addEventListener("paste", (e) => {
+    const clipboard = e.clipboardData || window.clipboardData;
+    if (!clipboard) return;
 
-      let file = null;
+    let file = null;
 
-      if (clipboard.items && clipboard.items.length) {
-        for (let i = 0; i < clipboard.items.length; i++) {
-          const item = clipboard.items[i];
-          if (item.type.indexOf("image") !== -1) {
-            file = item.getAsFile();
-            break;
-          }
+    if (clipboard.items && clipboard.items.length) {
+      for (let i = 0; i < clipboard.items.length; i++) {
+        const item = clipboard.items[i];
+        if (item.type.indexOf("image") !== -1) {
+          file = item.getAsFile();
+          break;
         }
       }
+    }
 
-      if (!file && clipboard.files && clipboard.files.length) {
-        file = clipboard.files[0];
-      }
+    if (!file && clipboard.files && clipboard.files.length) {
+      file = clipboard.files[0];
+    }
 
-      if (file) {
-        setImageFile(file);
-        statusText.textContent =
-          "Imagem colada da área de transferência. Pronto para analisar.";
-        e.preventDefault();
-      }
-    });
+    if (file) {
+      setImageFile(file);
+      statusText.textContent =
+        "Imagem colada da área de transferência. Pronto para analisar.";
+      e.preventDefault();
+    }
+  });
 
-    analisarBtn.addEventListener("click", async () => {
-      if (!selectedFile) {
-        alert("Selecione ou cole primeiro o print da Blaze.");
+  analisarBtn.addEventListener("click", async () => {
+    if (!selectedFile) {
+      alert("Selecione ou cole primeiro o print da Blaze.");
+      return;
+    }
+
+    analisarBtn.disabled = true;
+    statusText.textContent = "Analisando print com IA...";
+    resultadoCard.classList.add("hidden");
+
+    const formData = new FormData();
+    formData.append("image", selectedFile);
+    formData.append("modo", getSelectedMode()); // "double" ou "crash"
+
+    try {
+      const res = await fetch(BACKEND_URL, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        console.error("Erro HTTP do backend:", res.status, txt);
+        alert("Erro no servidor de IA: HTTP " + res.status);
+        statusText.textContent = "Erro ao analisar. Tente novamente.";
         return;
       }
 
-      analisarBtn.disabled = true;
-      statusText.textContent = "Analisando print com IA...";
-      resultadoCard.classList.add("hidden");
+      const data = await res.json();
+      console.log("Resposta da IA:", data);
 
-      const formData = new FormData();
-      formData.append("image", selectedFile);
-      // Campo extra com o tipo de jogo para o backend usar se quiser
-      formData.append("modo", getSelectedMode()); // "double" ou "crash"
+      const acao = data.acao || "NAO_OPERAR";
+      const conf = data.confianca ?? 0.0;
+      const justificativa =
+        data.justificativa ||
+        "Mercado indefinido. IA recomenda não entrar nessa rodada.";
 
-      try {
-        const res = await fetch(BACKEND_URL, {
-          method: "POST",
-          body: formData,
-        });
-
-        if (!res.ok) {
-          const txt = await res.text();
-          console.error("Erro HTTP do backend:", res.status, txt);
-          alert("Erro no servidor de IA: HTTP " + res.status);
-          statusText.textContent = "Erro ao analisar. Tente novamente.";
-          return;
-        }
-
-        const data = await res.json();
-        console.log("Resposta da IA:", data);
-
-        const acao = data.acao || "NAO_OPERAR";
-        const conf = data.confianca ?? 0.0;
-        const justificativa =
-          data.justificativa ||
-          "Mercado indefinido. IA recomenda não entrar nessa rodada.";
-
-        // Estilo por tipo de ação
-        if (acao === "BRANCO" || acao === "ENTRAR_BRANCO") {
-          acaoText.textContent = "ENTRAR NO BRANCO";
-          acaoText.className =
-            "text-3xl md:text-4xl font-black mb-2 text-amber-200";
-        } else if (acao === "CRASH_2X" || acao === "ENTRAR_2X") {
-          acaoText.textContent = "ENTRAR ATÉ 2x";
-          acaoText.className =
-            "text-3xl md:text-4xl font-black mb-2 text-emerald-300";
-        } else if (acao === "NAO_OPERAR" || acao === "EVITAR") {
-          acaoText.textContent = "NÃO ENTRAR";
-          acaoText.className =
-            "text-3xl md:text-4xl font-black mb-2 text-slate-200";
-        } else {
-          // fallback genérico
-          acaoText.textContent = acao.toUpperCase();
-          acaoText.className =
-            "text-3xl md:text-4xl font-black mb-2 text-slate-100";
-        }
-
-        confText.textContent =
-          "Confiança: " + (conf * 100).toFixed(0) + "%";
-        justificativaText.textContent = justificativa;
-
-        resultadoCard.classList.remove("hidden");
-        statusText.textContent = "Análise concluída.";
-      } catch (err) {
-        console.error("Erro no fetch:", err);
-        statusText.textContent = "Erro ao analisar. Tente novamente.";
-        alert("Erro ao conectar com o servidor de IA.");
-      } finally {
-        analisarBtn.disabled = false;
+      if (acao === "BRANCO" || acao === "ENTRAR_BRANCO") {
+        acaoText.textContent = "ENTRAR NO BRANCO";
+        acaoText.className =
+          "text-3xl md:text-4xl font-black mb-2 text-amber-200";
+      } else if (acao === "CRASH_2X" || acao === "ENTRAR_2X") {
+        acaoText.textContent = "ENTRAR ATÉ 2x";
+        acaoText.className =
+          "text-3xl md:text-4xl font-black mb-2 text-emerald-300";
+      } else if (acao === "NAO_OPERAR" || acao === "EVITAR") {
+        acaoText.textContent = "NÃO ENTRAR";
+        acaoText.className =
+          "text-3xl md:text-4xl font-black mb-2 text-slate-200";
+      } else {
+        acaoText.textContent = acao.toUpperCase();
+        acaoText.className =
+          "text-3xl md:text-4xl font-black mb-2 text-slate-100";
       }
-    });
-  </script>
-</body>
-</html>
+
+      confText.textContent = "Confiança: " + (conf * 100).toFixed(0) + "%";
+      justificativaText.textContent = justificativa;
+
+      resultadoCard.classList.remove("hidden");
+      statusText.textContent = "Análise concluída.";
+    } catch (err) {
+      console.error("Erro no fetch:", err);
+      statusText.textContent = "Erro ao analisar. Tente novamente.";
+      alert("Erro ao conectar com o servidor de IA.");
+    } finally {
+      analisarBtn.disabled = false;
+    }
+  });
+</script>
