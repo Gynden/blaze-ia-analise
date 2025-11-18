@@ -128,7 +128,8 @@ Lembre-se: seja conservador, não force entradas.
                     "role": "user",
                     "content": [
                         {"type": "text", "text": user_text},
-                        {"type": "input_image", "image_url": {"url": data_url}},
+                        # 👇 AQUI estava "input_image", agora é "image_url"
+                        {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 },
             ],
@@ -137,14 +138,12 @@ Lembre-se: seja conservador, não force entradas.
         )
 
         content = completion.choices[0].message.content.strip()
-        # Garante que veio JSON
         data = json.loads(content)
 
         acao = str(data.get("acao", "NAO_OPERAR")).upper()
         confianca = float(data.get("confianca", 0.0))
         justificativa = str(data.get("justificativa", "")).strip()
 
-        # Normaliza ação pra algo que o front entende bem
         if acao not in {"BRANCO", "CRASH_2X", "NAO_OPERAR"}:
             acao = "NAO_OPERAR"
 
@@ -156,39 +155,8 @@ Lembre-se: seja conservador, não force entradas.
         )
 
     except Exception as e:
-        # Qualquer erro → fallback seguro
         return AnaliseResponse(
             acao="NAO_OPERAR",
             confianca=0.0,
             justificativa=f"Erro ao usar a IA: {e}. Prefira não operar nesta rodada."
         )
-
-
-# ----------------------------
-# Rota principal de análise
-# ----------------------------
-
-@app.post("/api/analisar", response_model=AnaliseResponse)
-async def analisar_imagem(
-    image: UploadFile = File(...),
-    modo: str = Form("double"),  # "double" ou "crash"
-):
-    """
-    Recebe um print da Blaze e retorna a decisão da IA.
-    - image: arquivo de imagem enviado em multipart/form-data
-    - modo: "double" (branco) ou "crash" (2x)
-    """
-
-    # Garante um valor válido pro modo
-    modo = modo.lower().strip()
-    if modo not in {"double", "crash"}:
-        modo = "double"
-
-    # Lê os bytes da imagem
-    image_bytes = await image.read()
-
-    # Se quiser, aqui daria pra salvar logs ou prints em disco/Cloud Storage
-    # Por enquanto, só manda direto pra IA
-    resposta_ia = chamar_groq_vision(image_bytes, modo)
-
-    return resposta_ia
