@@ -157,8 +157,45 @@
 
   let selectedFile = null;
 
-  // ✅ Endpoint correto
-  const BACKEND_URL = "https://blaze-ia-analise.onrender.com/analisar";
+  // Base do backend
+  const BASE_URL = "https://blaze-ia-analise.onrender.com";
+
+  // tenta /analisar, depois /api/analisar, depois /
+  async function chamarBackend(formData) {
+    const caminhos = ["/analisar", "/api/analisar", "/"];
+    let ultimoStatus = null;
+    let ultimoTexto = "";
+
+    for (const path of caminhos) {
+      try {
+        const res = await fetch(BASE_URL + path, {
+          method: "POST",
+          body: formData,
+        });
+
+        // se for 404, tenta o próximo caminho
+        if (res.status === 404) {
+          ultimoStatus = res.status;
+          ultimoTexto = await res.text().catch(() => "");
+          console.warn("404 em", path, "-> tentando próximo caminho...");
+          continue;
+        }
+
+        // qualquer coisa diferente de 404 a gente retorna
+        return res;
+      } catch (e) {
+        console.error("Erro chamando", path, e);
+        ultimoStatus = 0;
+        ultimoTexto = e?.message || String(e);
+      }
+    }
+
+    // se nenhum funcionou:
+    const err = new Error("Nenhum endpoint respondeu corretamente.");
+    err.status = ultimoStatus;
+    err.detail = ultimoTexto;
+    throw err;
+  }
 
   function getSelectedMode() {
     const radio = document.querySelector('input[name="game-mode"]:checked');
@@ -179,6 +216,7 @@
     statusText.textContent = "Imagem carregada. Pronto para analisar.";
   }
 
+  // Abrir seletor ao clicar em "Enviar print"
   document.querySelector("label").addEventListener("click", () => {
     fileInput.click();
   });
@@ -188,6 +226,7 @@
     setImageFile(file);
   });
 
+  // Colar print (Ctrl+V - desktop)
   document.addEventListener("paste", (e) => {
     const clipboard = e.clipboardData || window.clipboardData;
     if (!clipboard) return;
@@ -231,13 +270,10 @@
     formData.append("modo", getSelectedMode()); // "double" ou "crash"
 
     try {
-      const res = await fetch(BACKEND_URL, {
-        method: "POST",
-        body: formData,
-      });
+      const res = await chamarBackend(formData);
 
       if (!res.ok) {
-        const txt = await res.text();
+        const txt = await res.text().catch(() => "");
         console.error("Erro HTTP do backend:", res.status, txt);
         alert("Erro no servidor de IA: HTTP " + res.status);
         statusText.textContent = "Erro ao analisar. Tente novamente.";
@@ -277,9 +313,12 @@
       resultadoCard.classList.remove("hidden");
       statusText.textContent = "Análise concluída.";
     } catch (err) {
-      console.error("Erro no fetch:", err);
+      console.error("Erro geral ao chamar backend:", err);
       statusText.textContent = "Erro ao analisar. Tente novamente.";
-      alert("Erro ao conectar com o servidor de IA.");
+      alert(
+        "Erro ao conectar com o servidor de IA." +
+          (err.status ? " Código: " + err.status : "")
+      );
     } finally {
       analisarBtn.disabled = false;
     }
