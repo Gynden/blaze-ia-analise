@@ -1,3 +1,4 @@
+# main.py
 import os
 import base64
 import json
@@ -5,9 +6,9 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
 
+# ==== CONFIG FASTAPI =====
 app = FastAPI(title="Blaze IA – Double & Crash")
 
-# CORS liberado pro seu front (GitHub Pages, etc.)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,166 +17,139 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Cliente da Groq
+# ==== CLIENTE GROQ =====
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# Modelo NOVO de visão da Groq
-MODEL_NAME = "llama-3.2-90b-vision-preview"
+# 🔴 MODEL ANTIGO (DEPRECADO)
+# MODEL_ID = "llama-3.2-90b-vision-preview"
+
+# ✅ MODEL NOVO (VISÃO)
+MODEL_ID = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 
-@app.get("/")
-async def root():
-    return {"status": "ok", "msg": "Blaze IA API online"}
+def encode_image_bytes(file_bytes: bytes) -> str:
+    """Converte bytes da imagem em base64 (string)."""
+    return base64.b64encode(file_bytes).decode("utf-8")
 
 
-async def file_to_base64(upload: UploadFile) -> str:
-    """
-    Converte o arquivo enviado em base64 (string) para mandar pra IA.
-    """
-    content = await upload.read()
-    return base64.b64encode(content).decode("utf-8")
+def montar_prompt(modo: str) -> str:
+    """Texto base pro prompt, de acordo com o modo selecionado."""
+    if modo == "crash":
+        return (
+            "Você é uma IA especialista em Blaze Crash. "
+            "Seu foco é encontrar boas oportunidades de entrada para buscar apenas 2x, "
+            "evitando entradas arriscadas.\n\n"
+            "Analise o histórico/tela do print enviado e responda APENAS em JSON "
+            "com as chaves: 'acao' (valores possíveis: 'CRASH_2X' ou 'NAO_OPERAR'), "
+            "'confianca' (0 a 1) e 'justificativa' (texto curto em português explicando o motivo)."
+        )
+    else:
+        # default = double
+        return (
+            "Você é uma IA especialista em Blaze Double focada em CAÇAR O BRANCO. "
+            "Analise o histórico/tela do print enviado e diga se vale a pena "
+            "entrar no branco na próxima rodada.\n\n"
+            "Responda APENAS em JSON com as chaves: "
+            "'acao' (valores possíveis: 'BRANCO' ou 'NAO_OPERAR'), "
+            "'confianca' (0 a 1) e 'justificativa' (texto curto em português explicando o motivo)."
+        )
 
 
 @app.post("/api/analisar")
-async def analisar(
+async def analisar_imagem(
     image: UploadFile = File(...),
     modo: str = Form("double"),  # "double" ou "crash"
 ):
-    """
-    Recebe um print da Blaze + modo de jogo e retorna ação da IA:
-    - Double: focar em BRANCO
-    - Crash: focar em 2x
-    """
-
-    # garante valor conhecido
-    modo = modo.lower().strip()
-    if modo not in ("double", "crash"):
-        modo = "double"
-
-    # descrição amigável pro prompt
-    if modo == "double":
-        modo_descricao = (
-            "Blaze Double, focando apenas em decidir se vale a pena entrar "
-            "buscando o BRANCO (white)."
-        )
-    else:
-        modo_descricao = (
-            "Blaze Crash, focando apenas em decidir se vale a pena entrar "
-            "buscando multiplicador de 2x."
-        )
-
     try:
-        img_b64 = await file_to_base64(image)
+        # Lê imagem enviada
+        img_bytes = await image.read()
+        base64_image = encode_image_bytes(img_bytes)
 
-        prompt_text = f"""
-Você é uma IA que analisa prints da Blaze no modo {modo_descricao}.
+        # monta data URL pra visão
+        mime = image.content_type or "image/png"
+        data_url = f"data:{mime};base64,{base64_image}"
 
-REGRAS IMPORTANTES:
-- Analise somente o histórico visível no print.
-- Considere sequência de cores/valores, padrões recentes e risco.
-- Se o cenário estiver muito ruim ou incerto, recomende NÃO ENTRAR.
+        prompt = montar_prompt(modo)
 
-Sua resposta DEVE ser SOMENTE um JSON válido, sem texto antes ou depois, no seguinte formato:
+        system_message = {
+            "role": "system",
+            "content": (
+                "Você SEMPRE deve responder em JSON puro, sem texto extra, "
+                "seguindo exatamente as chaves pedidas no prompt do usuário."
+            ),
+        }
 
-{{
-  "acao": "BRANCO" | "CRASH_2X" | "NAO_OPERAR",
-  "confianca": 0.0 a 1.0,
-  "justificativa": "texto curto em português explicando o motivo"
-}}
-
-- Para Blaze Double (modo="double"), use:
-  - "BRANCO"    -> quando enxergar oportunidade de entrar no branco
-  - "NAO_OPERAR" -> quando não for seguro entrar
-
-- Para Blaze Crash (modo="crash"), use:
-  - "CRASH_2X"  -> quando enxergar boa chance de bater 2x
-  - "NAO_OPERAR" -> quando não for seguro entrar
-
-Se não conseguir analisar por qualquer motivo, responda:
-{{
-  "acao": "NAO_OPERAR",
-  "confianca": 0.0,
-  "justificativa": "Não consegui analisar o print com segurança. Prefira não operar nesta rodada."
-}}
-        """.strip()
-
-        # chamada ao modelo de visão
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
+        user_message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
                 {
-                    "role": "system",
-                    "content": "Você é uma IA especialista em Blaze que responde sempre em JSON válido.",
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt_text,
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{img_b64}"
-                            },
-                        },
-                    ],
+                    "type": "image_url",
+                    "image_url": {
+                        "url": data_url,
+                    },
                 },
             ],
-            max_tokens=400,
+        }
+
+        completion = client.chat.completions.create(
+            model=MODEL_ID,
+            messages=[system_message, user_message],
+            temperature=0.3,
+            max_completion_tokens=300,
+            top_p=1,
+            stream=False,
         )
 
         raw_content = completion.choices[0].message.content
-        # tenta interpretar como JSON
+        print("Resposta bruta da IA:", raw_content)
+
+        # tenta fazer parse do JSON
         try:
             data = json.loads(raw_content)
         except Exception:
-            # fallback se a IA mandar qualquer coisa fora do padrão
             data = {
                 "acao": "NAO_OPERAR",
                 "confianca": 0.0,
                 "justificativa": (
-                    "Erro ao interpretar a resposta da IA. "
-                    "Prefira não operar nesta rodada."
+                    "Não consegui interpretar a resposta da IA. "
+                    "Prefira não entrar nesta rodada."
                 ),
             }
 
-        # saneia campos básicos pra evitar erro no front
-        acao = str(data.get("acao", "NAO_OPERAR")).upper()
-        try:
-            confianca = float(data.get("confianca", 0.0))
-        except Exception:
-            confianca = 0.0
-        justificativa = str(
-            data.get(
-                "justificativa",
-                "Mercado indefinido. Prefira não operar nesta rodada.",
-            )
+        # garante campos básicos
+        acao = data.get("acao", "NAO_OPERAR")
+        confianca = float(data.get("confianca", 0) or 0)
+        justificativa = data.get(
+            "justificativa",
+            "Análise indisponível. Prefira não entrar nesta rodada.",
         )
-
-        # clampa confiança entre 0 e 1
-        if confianca < 0:
-            confianca = 0.0
-        if confianca > 1:
-            confianca = 1.0
 
         return {
             "acao": acao,
             "confianca": confianca,
             "justificativa": justificativa,
-            "modo": modo,
         }
 
     except Exception as e:
-        # log básico no backend e resposta segura
-        print("Erro ao usar IA:", repr(e))
         return {
             "acao": "NAO_OPERAR",
             "confianca": 0.0,
             "justificativa": (
-                f"Erro ao usar a IA. Detalhe: {repr(e)}. "
-                "Prefira não operar nesta rodada."
+                f"Erro ao usar a IA: {type(e).__name__}('{e}'). "
+                "Prefira não entrar nesta rodada."
             ),
-            "modo": modo,
         }
+
+
+@app.get("/api/analisar")
+async def status():
+    return {
+        "acao": "NAO_OPERAR",
+        "confianca": 0.0,
+        "justificativa": (
+            "Backend Blaze IA está online. Envie um POST multipart/form-data "
+            "para /api/analisar com o campo 'image' e, opcionalmente, 'modo' "
+            "('double' ou 'crash')."
+        ),
+    }
