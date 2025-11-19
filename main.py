@@ -1,115 +1,129 @@
-# main.py
 import os
 import base64
 import json
-from fastapi import FastAPI, UploadFile, File, Form
+from typing import Optional
+
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from groq import Groq
 
-# ==== CONFIG FASTAPI =====
-app = FastAPI(title="Blaze IA – Double & Crash")
+# ---------------------------------------------------------
+# Configuração básica
+# ---------------------------------------------------------
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise RuntimeError("Variável de ambiente GROQ_API_KEY não encontrada.")
+
+client = Groq(api_key=GROQ_API_KEY)
+
+# modelo visão atual da Groq
+MODEL_NAME = "llama-3.2-11b-vision-preview"
+
+app = FastAPI(title="Blaze IA - Double & Crash")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # se quiser, depois limita pro domínio do GitHub Pages
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==== CLIENTE GROQ =====
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# 🔴 MODEL ANTIGO (DEPRECADO)
-# MODEL_ID = "llama-3.2-90b-vision-preview"
+# ---------------------------------------------------------
+# Rotas simples de teste
+# ---------------------------------------------------------
 
-# ✅ MODEL NOVO (VISÃO)
-MODEL_ID = "meta-llama/llama-4-scout-17b-16e-instruct"
-
-
-def encode_image_bytes(file_bytes: bytes) -> str:
-    """Converte bytes da imagem em base64 (string)."""
-    return base64.b64encode(file_bytes).decode("utf-8")
+@app.get("/")
+async def root():
+    return {"status": "online", "message": "Blaze IA backend OK"}
 
 
-def montar_prompt(modo: str) -> str:
-    """Texto base pro prompt, de acordo com o modo selecionado."""
-    if modo == "crash":
-        return (
-            "Você é uma IA especialista em Blaze Crash. "
-            "Seu foco é encontrar boas oportunidades de entrada para buscar apenas 2x, "
-            "evitando entradas arriscadas.\n\n"
-            "Analise o histórico/tela do print enviado e responda APENAS em JSON "
-            "com as chaves: 'acao' (valores possíveis: 'CRASH_2X' ou 'NAO_OPERAR'), "
-            "'confianca' (0 a 1) e 'justificativa' (texto curto em português explicando o motivo)."
-        )
-    else:
-        # default = double
-        return (
-            "Você é uma IA especialista em Blaze Double focada em CAÇAR O BRANCO. "
-            "Analise o histórico/tela do print enviado e diga se vale a pena "
-            "entrar no branco na próxima rodada.\n\n"
-            "Responda APENAS em JSON com as chaves: "
-            "'acao' (valores possíveis: 'BRANCO' ou 'NAO_OPERAR'), "
-            "'confianca' (0 a 1) e 'justificativa' (texto curto em português explicando o motivo)."
-        )
+# ---------------------------------------------------------
+# Função utilitária: converte imagem pra data URL (base64)
+# ---------------------------------------------------------
 
+async def file_to_data_url(file: UploadFile) -> str:
+    content = await file.read()
+    mime_type = file.content_type or "image/png"
+    b64 = base64.b64encode(content).decode("utf-8")
+    return f"data:{mime_type};base64,{b64}"
+
+
+# ---------------------------------------------------------
+# Rota principal: /api/analisar
+# ---------------------------------------------------------
 
 @app.post("/api/analisar")
 async def analisar_imagem(
     image: UploadFile = File(...),
-    modo: str = Form("double"),  # "double" ou "crash"
+    modo: str = Form("double")  # "double" ou "crash" vindo do front
 ):
+    """
+    Recebe um print da Blaze + modo de jogo e retorna:
+    {
+      "acao": "ENTRAR_BRANCO" | "ENTRAR_2X" | "NAO_ENTRAR",
+      "confianca": float 0..1,
+      "justificativa": "texto curto"
+    }
+    """
     try:
-        # Lê imagem enviada
-        img_bytes = await image.read()
-        base64_image = encode_image_bytes(img_bytes)
+        image_url = await file_to_data_url(image)
 
-        # monta data URL pra visão
-        mime = image.content_type or "image/png"
-        data_url = f"data:{mime};base64,{base64_image}"
+        # Prompt para a IA
+        system_prompt = (
+            "Você é uma IA especialista em Blaze Double (foco no BRANCO) "
+            "e Blaze Crash (foco em buscar 2x). "
+            "Você SEMPRE deve responder em JSON válido, sem texto extra, "
+            "no formato:\n"
+            "{"
+            '"acao": "ENTRAR_BRANCO" ou "ENTRAR_2X" ou "NAO_ENTRAR", '
+            '"confianca": número entre 0 e 1, '
+            '"justificativa": "texto curto em português explicando o motivo"'
+            "}\n"
+            "Não use acentos estranhos, não use markdown, não coloque ```."
+        )
 
-        prompt = montar_prompt(modo)
-
-        system_message = {
-            "role": "system",
-            "content": (
-                "Você SEMPRE deve responder em JSON puro, sem texto extra, "
-                "seguindo exatamente as chaves pedidas no prompt do usuário."
-            ),
-        }
-
-        user_message = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": data_url,
-                    },
-                },
-            ],
-        }
+        user_text = (
+            f"Modo de jogo atual: {modo}.\n"
+            "- Se o modo for 'double', analise o histórico e o padrão de cores e "
+            "diga se vale a pena tentar ENTRAR_BRANCO ou se é melhor NAO_ENTRAR.\n"
+            "- Se o modo for 'crash', analise o gráfico de multiplicadores e diga "
+            "se vale a pena tentar ENTRAR_2X (buscar 2x) ou se é melhor NAO_ENTRAR.\n"
+            "Considere sempre gestão de risco e evite entradas arriscadas demais."
+        )
 
         completion = client.chat.completions.create(
-            model=MODEL_ID,
-            messages=[system_message, user_message],
-            temperature=0.3,
-            max_completion_tokens=300,
-            top_p=1,
-            stream=False,
+            model=MODEL_NAME,
+            response_format={"type": "json_object"},  # força JSON válido
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": image_url},
+                        },
+                    ],
+                },
+            ],
+            temperature=0.15,
+            max_tokens=200,
         )
 
         raw_content = completion.choices[0].message.content
-        print("Resposta bruta da IA:", raw_content)
 
-        # tenta fazer parse do JSON
+        # Agora deve ser JSON puro por causa do response_format
         try:
             data = json.loads(raw_content)
-        except Exception:
-            data = {
-                "acao": "NAO_OPERAR",
+        except json.JSONDecodeError:
+            # fallback se mesmo assim vier zoado
+            return {
+                "acao": "NAO_ENTRAR",
                 "confianca": 0.0,
                 "justificativa": (
                     "Não consegui interpretar a resposta da IA. "
@@ -117,13 +131,22 @@ async def analisar_imagem(
                 ),
             }
 
-        # garante campos básicos
-        acao = data.get("acao", "NAO_OPERAR")
-        confianca = float(data.get("confianca", 0) or 0)
-        justificativa = data.get(
-            "justificativa",
-            "Análise indisponível. Prefira não entrar nesta rodada.",
+        acao = data.get("acao", "NAO_ENTRAR")
+        confianca = data.get("confianca", 0.0)
+        justificativa = data.get("justificativa") or (
+            "IA não enviou justificativa. Prefira não entrar nesta rodada."
         )
+
+        # garante tipo numérico e faixa 0..1
+        try:
+            confianca = float(confianca)
+        except (ValueError, TypeError):
+            confianca = 0.0
+
+        if confianca < 0:
+            confianca = 0.0
+        if confianca > 1:
+            confianca = 1.0
 
         return {
             "acao": acao,
@@ -132,24 +155,12 @@ async def analisar_imagem(
         }
 
     except Exception as e:
+        # Aqui qualquer erro de Groq, rede, etc.
         return {
-            "acao": "NAO_OPERAR",
+            "acao": "NAO_ENTRAR",
             "confianca": 0.0,
             "justificativa": (
-                f"Erro ao usar a IA: {type(e).__name__}('{e}'). "
+                f"Erro ao usar a IA: {str(e)}. "
                 "Prefira não entrar nesta rodada."
             ),
         }
-
-
-@app.get("/api/analisar")
-async def status():
-    return {
-        "acao": "NAO_OPERAR",
-        "confianca": 0.0,
-        "justificativa": (
-            "Backend Blaze IA está online. Envie um POST multipart/form-data "
-            "para /api/analisar com o campo 'image' e, opcionalmente, 'modo' "
-            "('double' ou 'crash')."
-        ),
-    }
